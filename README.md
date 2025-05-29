@@ -1,1 +1,1 @@
-# BIT
+## BIT: Joint Modeling Recommendation and Search via Bidirectional Interest Transfer
