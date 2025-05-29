@@ -8,7 +8,7 @@ from .base_model import BaseModel
 from .layers import FullyConnectedLayer, feature_align, PositionalEmbedding, PLE_layer
 
 
-class UniSAR(BaseModel):
+class UniSARWX(BaseModel):
     @staticmethod
     def parse_model_args(parser):
         parser.add_argument('--num_layers', type=int, default=1)
@@ -31,13 +31,12 @@ class UniSAR(BaseModel):
         self.num_layers = args.num_layers
         self.num_heads = args.num_heads
         self.batch_size = args.batch_size
-
         self.src_pos = PositionalEmbedding(const.max_src_session_his_len,
                                            self.item_size)
         self.rec_pos = PositionalEmbedding(const.max_rec_his_len,
                                            self.item_size)
         self.global_pos_emb = PositionalEmbedding(
-            const.max_rec_his_len + const.max_src_session_his_len,
+            const.max_rec_his_len,
             self.item_size)
 
         self.rec_transformer = Transformer(emb_size=self.item_size,
@@ -96,7 +95,8 @@ class UniSAR(BaseModel):
 
         self.hidden_unit = args.pred_hid_units
 
-        input_dim = 3 * self.item_size + self.user_size + self.query_size
+        #input_dim = 2 * self.item_size + self.user_size + self.query_size
+        input_dim = 2 * self.item_size + self.user_size
         self.ple_layer = PLE_layer(orig_input_dim=input_dim,
                                    bottom_mlp_dims=[64],
                                    tower_mlp_dims=[128, 64],
@@ -138,21 +138,15 @@ class UniSAR(BaseModel):
         return query_his_emb + click_item_his_emb, q_i_align_used
 
     def get_all_his_emb(self, all_his, all_his_type):
-        rec_his = torch.masked_fill(all_his, all_his_type != 1, 0)
-        rec_his_emb = self.session_embedding.get_item_emb(rec_his)
-        rec_his_emb = torch.masked_fill(rec_his_emb,
-                                        (all_his_type != 1).unsqueeze(-1), 0)
+        # rec_his = torch.masked_fill(all_his, all_his_type != 1, 0)
+        # rec_his_emb = self.session_embedding.get_query_emb(all_his)
+        rec_his_emb = self.session_embedding.get_history_emb(all_his)
+        # rec_his_emb = torch.masked_fill(rec_his_emb,
+        #                                 (all_his_type != 1).unsqueeze(-1), 0)
 
-        src_session_his = torch.masked_fill(all_his, all_his_type != 2, 0)
-        src_his_emb, q_i_align_used = self.src_feat_process(
-            self.session_embedding(src_session_his))
-        src_his_emb = torch.masked_fill(src_his_emb,
-                                        (all_his_type != 2).unsqueeze(-1), 0)
-
-        all_his_emb = rec_his_emb + src_his_emb
         all_his_mask = torch.where(all_his == 0, 1, 0).bool()
 
-        return all_his_emb, all_his_mask, q_i_align_used
+        return rec_his_emb, all_his_mask, None
 
     def repeat_feat(self, feature_list, items_emb):
         repeat_feature_list = [
@@ -180,81 +174,73 @@ class UniSAR(BaseModel):
     def forward(self, user, all_his, all_his_type, items_emb, domain):
         user_emb = self.session_embedding.get_user_emb(user)
 
-        all_his_emb, all_his_mask, q_i_align_used = self.get_all_his_emb(
+        all_his_emb, all_his_mask, _ = self.get_all_his_emb(
             all_his, all_his_type)
 
-        rec_his_mask = torch.masked_select(all_his_mask,
-                                           (all_his_type == 1)).reshape(
-                                               (all_his_emb.shape[0],
-                                                const.max_rec_his_len))
-        src_his_mask = torch.masked_select(all_his_mask,
-                                           (all_his_type == 2)).reshape(
-                                               (all_his_emb.shape[0],
-                                                const.max_src_session_his_len))
+        # rec_his_mask = torch.masked_select(all_his_mask,
+        #                                    (all_his_type == 1)).reshape(
+        #                                        (all_his_emb.shape[0],
+        #                                         const.max_rec_his_len))
+        # src_his_mask = torch.masked_select(all_his_mask,
+        #                                    (all_his_type == 2)).reshape(
+        #                                        (all_his_emb.shape[0],
+        #                                         const.max_src_session_his_len))
 
         all_his_emb_w_pos = all_his_emb + self.global_pos_emb(all_his_emb)
 
-        global_mask = all_his_type[:, :, None] == all_his_type[:, None, :]
+        # global_mask = all_his_type[:, :, None] == all_his_type[:, None, :]
 
         global_encoded = self.global_transformer(all_his_emb_w_pos,
-                                                 all_his_mask, global_mask)
-        src2rec, rec2src = self.split_rec_src(global_encoded, all_his_type)
+                                                 all_his_mask)
+        # src2rec, rec2src = self.split_rec_src(global_encoded, all_his_type)
 
-        rec_his_emb, src_his_emb = self.split_rec_src(all_his_emb,
-                                                      all_his_type)
-        rec_his_emb_w_pos = rec_his_emb + self.rec_pos(rec_his_emb)
-        src_his_emb_w_pos = src_his_emb + self.src_pos(src_his_emb)
+        # rec_his_emb, src_his_emb = self.split_rec_src(all_his_emb,
+        #                                               all_his_type)
+        # rec_his_emb_w_pos = rec_his_emb + self.rec_pos(rec_his_emb)
+        # src_his_emb_w_pos = src_his_emb + self.src_pos(src_his_emb)
 
-        rec2rec = self.rec_transformer(rec_his_emb_w_pos, rec_his_mask)
-        src2src = self.src_transformer(src_his_emb_w_pos, src_his_mask)
+        # rec2rec = self.rec_transformer(rec_his_emb_w_pos, rec_his_mask)
+        # src2src = self.src_transformer(src_his_emb_w_pos, src_his_mask)
 
-        rec_fusion_decoded = self.rec_cross_fusion(
-            tgt=rec2rec,
-            memory=src2rec,
-            tgt_key_padding_mask=rec_his_mask,
-            memory_key_padding_mask=rec_his_mask)
+        # rec_fusion_decoded = self.rec_cross_fusion(
+        #     tgt=rec2rec,
+        #     memory=src2rec,
+        #     tgt_key_padding_mask=rec_his_mask,
+        #     memory_key_padding_mask=rec_his_mask)
 
-        src_fusion_decoded = self.src_cross_fusion(
-            tgt=src2src,
-            memory=rec2src,
-            tgt_key_padding_mask=src_his_mask,
-            memory_key_padding_mask=src_his_mask)
+        # src_fusion_decoded = self.src_cross_fusion(
+        #     tgt=src2src,
+        #     memory=rec2src,
+        #     tgt_key_padding_mask=src_his_mask,
+        #     memory_key_padding_mask=src_his_mask)
 
-        his_cl_used = [
-            src2rec, rec2rec, rec_his_mask, rec2src, src2src, src_his_mask
+        I = items_emb.shape[1]
+        # if domain == 'rec':
+        feature_list = [
+            global_encoded, user_emb
         ]
+        repeat_feature_list, items_emb = self.repeat_feat(
+            feature_list, items_emb)
+        global_encoded, user_emb = repeat_feature_list
+        all_his_mask = all_his_mask.repeat(I,1)
+        his_item_fusion = self.rec_his_attn_pooling(global_encoded, items_emb,
+                                               all_his_mask)
 
-        if domain == 'rec':
-            feature_list = [
-                rec_fusion_decoded, rec_his_mask, src_fusion_decoded,
-                src_his_mask, user_emb
-            ]
-            repeat_feature_list, items_emb = self.repeat_feat(
-                feature_list, items_emb)
-            rec_fusion_decoded, rec_his_mask,\
-                src_fusion_decoded, src_his_mask,\
-                user_emb = repeat_feature_list
+        user_feats = [his_item_fusion, user_emb]
 
-        rec_fusion = self.rec_his_attn_pooling(rec_fusion_decoded, items_emb,
-                                               rec_his_mask)
-        src_fusion = self.src_his_attn_pooling(src_fusion_decoded, items_emb,
-                                               src_his_mask)
-
-        user_feats = [rec_fusion, src_fusion, user_emb]
-
-        return user_feats, q_i_align_used, his_cl_used
+        return user_feats
 
     def inter_pred(self, user_feats, item_emb, domain, query_emb=None):
         assert domain in ["rec", "src"]
 
-        rec_interest, src_interest, user_emb = user_feats
+        mixed_interest, user_emb = user_feats
 
         if domain == "rec":
             item_emb = item_emb.reshape(-1, item_emb.size(-1))
 
             output = self.ple_layer(
                 torch.cat([
-                    rec_interest, src_interest, item_emb, user_emb,
+                     item_emb, user_emb,
                     self.rec_query.expand(item_emb.shape[0], -1)
                 ], -1))[0]
 
@@ -266,22 +252,33 @@ class UniSAR(BaseModel):
 
             output = self.ple_layer(
                 torch.cat([
-                    rec_interest, src_interest, item_emb, user_emb, query_emb
+                    item_emb, user_emb, query_emb
                 ], -1))[1]
             return self.src_fc_layer(output)
 
     def rec_loss(self, inputs):
-        user, all_his, all_his_type, pos_item, neg_items = inputs[
-            'user'], inputs['all_his'], inputs['all_his_type'], inputs[
-                'item'], inputs['neg_items']
+
+        user, all_his, pos_item, neg_items, title, _9000, _9001, _9002, _9003, _9004 = inputs['user'], inputs['all_his_1200'], inputs['item'], inputs['neg_items'], inputs["title"], inputs["_9000"], inputs["_9001"], inputs["_9002"], inputs["_9003"], inputs["_9004"]
 
         items = torch.cat([pos_item.unsqueeze(1), neg_items], dim=1)
-        items_emb = self.session_embedding.get_item_emb(items)
+        title_with_neg = torch.cat([title.unsqueeze(1), torch.zeros((items.shape[0], items.shape[1] - 1, title.shape[-1]), device=items.device)], dim=1)
+        item_get_command = {
+            "item_id": items.int(),
+            "caption": title_with_neg.int()
+        }
+        items_emb = self.session_embedding.get_item_emb(item_get_command)
         batch_size = items_emb.size(0)
-
-        user_feats, q_i_align_used, his_cl_used = self.forward(user,
-                                                               all_his,
-                                                               all_his_type,
+        user_get_command = {
+            "user_id": user.int(),
+            "_9000": _9000.int(),
+            "_9001": _9001.int(),
+            "_9002": _9002.int(),
+            "_9003": _9003.int(),
+            "_9004": _9004.int(),
+        }
+        user_feats = self.forward(user_get_command,
+                                                               all_his.int(),
+                                                               None,
                                                                items_emb,
                                                                domain='rec')
 
@@ -297,50 +294,60 @@ class UniSAR(BaseModel):
         loss_dict = {}
         loss_dict['click_loss'] = total_loss.clone()
 
-        if self.q_i_cl_weight > 0:
-            align_neg_item, align_neg_query = inputs['align_neg_item'], inputs[
-                'align_neg_query']
-            query_emb, click_item_mask, q_click_item_emb = q_i_align_used
+        # if self.q_i_cl_weight > 0:
+        #     align_neg_item, align_neg_query = inputs['align_neg_item'], inputs[
+        #         'align_neg_query']
+        #     query_emb, click_item_mask, q_click_item_emb = q_i_align_used
 
-            align_neg_items_emb = self.session_embedding.get_item_emb(
-                align_neg_item)
-            align_neg_querys_emb = self.session_embedding.get_query_emb(
-                align_neg_query)
-            align_loss = self.feature_alignment(
-                [align_neg_items_emb, align_neg_querys_emb], query_emb,
-                click_item_mask, q_click_item_emb)
-            loss_dict['q_i_cl_loss'] = align_loss.clone()
+        #     align_neg_items_emb = self.session_embedding.get_item_emb(
+        #         align_neg_item)
+        #     align_neg_querys_emb = self.session_embedding.get_query_emb(
+        #         align_neg_query)
+        #     align_loss = self.feature_alignment(
+        #         [align_neg_items_emb, align_neg_querys_emb], query_emb,
+        #         click_item_mask, q_click_item_emb)
+        #     loss_dict['q_i_cl_loss'] = align_loss.clone()
 
-            total_loss += self.q_i_cl_weight * align_loss
+        #     total_loss += self.q_i_cl_weight * align_loss
 
-        if self.his_cl_weight > 0:
-            src2rec, rec2rec, rec_his_mask,\
-                rec2src, src2src, src_his_mask = his_cl_used
-            rec_his_cl_loss = self.rec_his_cl(src2rec, rec2rec, rec_his_mask)
+        # if self.his_cl_weight > 0:
+            # src2rec, rec2rec, rec_his_mask,\
+            #     rec2src, src2src, src_his_mask = his_cl_used
+            # rec_his_cl_loss = self.rec_his_cl(src2rec, rec2rec, rec_his_mask)
 
-            src_his_cl_loss = self.src_his_cl(rec2src, src2src, src_his_mask)
+            # src_his_cl_loss = self.src_his_cl(rec2src, src2src, src_his_mask)
 
-            his_cl_loss = rec_his_cl_loss + src_his_cl_loss
-            loss_dict['his_cl_loss'] = his_cl_loss.clone()
+            # his_cl_loss = rec_his_cl_loss + src_his_cl_loss
+            # loss_dict['his_cl_loss'] = his_cl_loss.clone()
 
-            total_loss += self.his_cl_weight * his_cl_loss
+            # total_loss += self.his_cl_weight * his_cl_loss
 
         loss_dict['total_loss'] = total_loss
 
         return loss_dict
 
     def rec_predict(self, inputs):
-        user, all_his, all_his_type, pos_item, neg_items = inputs[
-            'user'], inputs['all_his'], inputs['all_his_type'], inputs[
-                'item'], inputs['neg_items']
+        user, all_his, pos_item, neg_items, title, _9000, _9001, _9002, _9003, _9004 = inputs['user'], inputs['all_his_1200'], inputs['item'], inputs['neg_items'], inputs["title"], inputs["_9000"], inputs["_9001"], inputs["_9002"], inputs["_9003"], inputs["_9004"]
 
         items = torch.cat([pos_item.unsqueeze(1), neg_items], dim=1)
-        items_emb = self.session_embedding.get_item_emb(items)
+        title_with_neg = torch.cat([title.unsqueeze(1), torch.zeros((items.shape[0], items.shape[1] - 1, title.shape[-1]), device=items.device)], dim=1)
+        item_get_command = {
+            "item_id": items.int(),
+            "caption": title_with_neg.int()
+        }
+        items_emb = self.session_embedding.get_item_emb(item_get_command)
         batch_size = items_emb.size(0)
-
-        user_feats, q_i_align_used, his_cl_used = self.forward(user,
-                                                               all_his,
-                                                               all_his_type,
+        user_get_command = {
+            "user_id": user.int(),
+            "_9000": _9000.int(),
+            "_9001": _9001.int(),
+            "_9002": _9002.int(),
+            "_9003": _9003.int(),
+            "_9004": _9004.int(),
+        }
+        user_feats = self.forward(user_get_command,
+                                                               all_his.int(),
+                                                               None,
                                                                items_emb,
                                                                domain='rec')
 
@@ -349,20 +356,32 @@ class UniSAR(BaseModel):
         return logits
 
     def src_loss(self, inputs):
-        user, all_his, all_his_type, pos_item, neg_items = inputs[
-            'user'], inputs['all_his'], inputs['all_his_type'], inputs[
-                'item'], inputs['neg_items']
+        user, all_his, pos_item, neg_items, title, _9000, _9001, _9002, _9003, _9004 = inputs['user'], inputs['all_his_1200'], inputs['item'], inputs['neg_items'], inputs["title"], inputs["_9000"], inputs["_9001"], inputs["_9002"], inputs["_9003"], inputs["_9004"]
+
 
         query = inputs['query']
         query_emb = self.session_embedding.get_query_emb(query)
-
+        
         items = torch.cat([pos_item.unsqueeze(1), neg_items], dim=1)
-        items_emb = self.session_embedding.get_item_emb(items)
+        title_with_neg = torch.cat([title.unsqueeze(1), torch.zeros((items.shape[0], items.shape[1] - 1, title.shape[-1]), device=items.device)], dim=1)
+        item_get_command = {
+            "item_id": items.int(),
+            "caption": title_with_neg.int()
+        }
+        items_emb = self.session_embedding.get_item_emb(item_get_command)
         batch_size = items_emb.size(0)
+        user_get_command = {
+            "user_id": user.int(),
+            "_9000": _9000.int(),
+            "_9001": _9001.int(),
+            "_9002": _9002.int(),
+            "_9003": _9003.int(),
+            "_9004": _9004.int(),
+        }
 
-        user_feats, q_i_align_used, his_cl_used = self.forward(user,
-                                                               all_his,
-                                                               all_his_type,
+        user_feats = self.forward(user_get_command,
+                                                               all_his.int(),
+                                                               None,
                                                                items_emb,
                                                                domain='rec')
 
@@ -380,54 +399,65 @@ class UniSAR(BaseModel):
         loss_dict = {}
         loss_dict['click_loss'] = total_loss.clone()
 
-        if self.q_i_cl_weight > 0:
-            align_neg_item, align_neg_query = inputs['align_neg_item'], inputs[
-                'align_neg_query']
-            query_emb, click_item_mask, q_click_item_emb = q_i_align_used
+        # if self.q_i_cl_weight > 0:
+        #     align_neg_item, align_neg_query = inputs['align_neg_item'], inputs[
+        #         'align_neg_query']
+        #     query_emb, click_item_mask, q_click_item_emb = q_i_align_used
 
-            align_neg_items_emb = self.session_embedding.get_item_emb(
-                align_neg_item)
-            align_neg_querys_emb = self.session_embedding.get_query_emb(
-                align_neg_query)
-            align_loss = self.feature_alignment(
-                [align_neg_items_emb, align_neg_querys_emb], query_emb,
-                click_item_mask, q_click_item_emb)
-            loss_dict['q_i_cl_loss'] = align_loss.clone()
+        #     align_neg_items_emb = self.session_embedding.get_item_emb(
+        #         align_neg_item)
+        #     align_neg_querys_emb = self.session_embedding.get_query_emb(
+        #         align_neg_query)
+        #     align_loss = self.feature_alignment(
+        #         [align_neg_items_emb, align_neg_querys_emb], query_emb,
+        #         click_item_mask, q_click_item_emb)
+        #     loss_dict['q_i_cl_loss'] = align_loss.clone()
 
-            total_loss += self.q_i_cl_weight * align_loss
+        #     total_loss += self.q_i_cl_weight * align_loss
 
-        if self.his_cl_weight > 0:
-            src2rec, rec2rec, rec_his_mask,\
-                rec2src, src2src, src_his_mask = his_cl_used
+        # if self.his_cl_weight > 0:
+        #     src2rec, rec2rec, rec_his_mask,\
+        #         rec2src, src2src, src_his_mask = his_cl_used
 
-            rec_his_cl_loss = self.rec_his_cl(src2rec, rec2rec, rec_his_mask)
+        #     rec_his_cl_loss = self.rec_his_cl(src2rec, rec2rec, rec_his_mask)
 
-            src_his_cl_loss = self.src_his_cl(rec2src, src2src, src_his_mask)
+        #     src_his_cl_loss = self.src_his_cl(rec2src, src2src, src_his_mask)
 
-            his_cl_loss = rec_his_cl_loss + src_his_cl_loss
-            loss_dict['his_cl_loss'] = his_cl_loss.clone()
+        #     his_cl_loss = rec_his_cl_loss + src_his_cl_loss
+        #     loss_dict['his_cl_loss'] = his_cl_loss.clone()
 
-            total_loss += self.his_cl_weight * his_cl_loss
+        #     total_loss += self.his_cl_weight * his_cl_loss
 
         loss_dict['total_loss'] = total_loss
 
         return loss_dict
 
     def src_predict(self, inputs):
-        user, all_his, all_his_type, pos_item, neg_items = inputs[
-            'user'], inputs['all_his'], inputs['all_his_type'], inputs[
-                'item'], inputs['neg_items']
+        user, all_his, pos_item, neg_items, title, _9000, _9001, _9002, _9003, _9004 = inputs['user'], inputs['all_his_1200'], inputs['item'], inputs['neg_items'], inputs["title"], inputs["_9000"], inputs["_9001"], inputs["_9002"], inputs["_9003"], inputs["_9004"]
 
         query = inputs['query']
         query_emb = self.session_embedding.get_query_emb(query)
 
         items = torch.cat([pos_item.unsqueeze(1), neg_items], dim=1)
-        items_emb = self.session_embedding.get_item_emb(items)
+        title_with_neg = torch.cat([title.unsqueeze(1), torch.zeros((items.shape[0], items.shape[1] - 1, title.shape[-1]), device=items.device)], dim=1)
+        item_get_command = {
+            "item_id": items.int(),
+            "caption": title_with_neg.int()
+        }
+        items_emb = self.session_embedding.get_item_emb(item_get_command)
         batch_size = items_emb.size(0)
+        user_get_command = {
+            "user_id": user.int(),
+            "_9000": _9000.int(),
+            "_9001": _9001.int(),
+            "_9002": _9002.int(),
+            "_9003": _9003.int(),
+            "_9004": _9004.int(),
+        }
 
-        user_feats, q_i_align_used, his_cl_used = self.forward(user,
-                                                               all_his,
-                                                               all_his_type,
+        user_feats = self.forward(user_get_command,
+                                                               all_his.int(),
+                                                               None,
                                                                items_emb,
                                                                domain='rec')
 
